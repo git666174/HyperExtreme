@@ -30,10 +30,10 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.frederic22.hyperextreme"
+        applicationId = "com.frederic22.hyperextreme.alive"
         minSdk = 33
         targetSdk = 37
-        versionCode = 130
+        versionCode = 131
         versionName = "1.0 Beta1+alive-fix"
 
         ndk {
@@ -63,6 +63,15 @@ android {
     }
 
     buildTypes {
+        // debug 也用同一把发布签名（2026-11-13）：否则每台机器 debug key 不同，
+        // 覆盖升级必报签名不一致；没有 keystore.properties 时退回默认 debug key。
+        debug {
+            signingConfig = if (keystoreProps != null) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
+        }
         release {
             // R8 全量裁剪 + 资源收缩。
             //
