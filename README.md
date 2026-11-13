@@ -1,3 +1,45 @@
+> ### 致谢 / Credits
+>
+> 本项目是 **[HyperExtreme](https://github.com/22Frederic/HyperExtreme)** 的 Fork，原作者 **[22Frederic](https://github.com/22Frederic)**。
+>
+> 感谢原作者的开源与持续维护。本仓库的所有改动、发行包与问题由维护者负责，**与原作者无关**；
+> 使用本仓库版本遇到问题时，请反馈到本仓库（Issues），不要去打扰原作者。
+>
+> 上游与本 Fork 均采用 **AGPL-3.0** 许可，本 Fork 的修改同样按 AGPL-3.0 公开。
+>
+> ---
+>
+> ### 本 Fork 说明
+>
+> 目标：修好 **Alive 壁纸在锁屏/AOD 不显示**，并让它能与 **HyperMusicCover** 共存；同时提供一个能与官方版**并排安装**的发行包。
+>
+> **分支**
+>
+> | 分支 | 用途 | 包名 |
+> |---|---|---|
+> | `main` | 本说明 + 上游代码 | `com.frederic22.hyperextreme`（同官方） |
+> | `fix/upstream-alive` | 可直接安装的改版（含改包名/签名脚本） | `com.frederic22.hyperextreme.alive`（可与官方共存） |
+> | `pr/alive` | 只含功能修复、未改包名，用于向上游提 PR | 同官方 |
+>
+> **主要修复（`pr/alive` 与 `fix/upstream-alive` 共有）**
+>
+> 1. **壁纸基底**：应用 Alive 时用卡片照片**单次 `setBitmap(SYSTEM|LOCK)`** 把锁屏+桌面写成同一张静态图，
+>    再 `killall com.miui.miwallpaper` 重建壁纸层。替代上游 `clear(both)` 回默认的做法 ——
+>    实测 `clear(both)` 之后 `getWallpaperId` 仍是 397/396（锁屏保留独立壁纸），Alive 在锁屏不可见。
+> 2. **挂载可靠性**：拿不到壁纸 leash 时 250ms×12 重试；失败判据由 `mounts` 改为 `kept`
+>    （否则全挂失败也会当成功，渲染器空转、屏幕全黑）；遇到景深壁纸（pictorial）继续等 `ImageWallpaper`。
+> 3. **与 HyperMusicCover 共存**：常驻 `MusicWatch` 探测「音乐屏」视图，出现时 Alive 淡出、停画帧、
+>    并把 `keyguard_foreground_layer` 让给歌词（同时摘掉系统人像）；退出后自动恢复。AOD 期间同样按此让路。
+>
+> **安装（`fix/upstream-alive` 分支的发行包）**
+>
+> - 包名 `com.frederic22.hyperextreme.alive`，可与官方版、其它改版**并排安装**
+> - 签名 `CN=HyperExtreme Alive`（自建 key，非官方签名）
+> - LSPosed 里是独立模块：**不要与原版 HyperExtreme 同时启用**（会双份 hook）
+> - 已知问题：从桌面灭屏进 AOD 时可能出现两个重叠日期（上游 v1.22.81 同样存在，待定位）
+>
+> ---
+
 <p align="center">
   <img
     src="app/src/main/res/drawable-nodpi/cover.png"
