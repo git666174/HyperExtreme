@@ -14,26 +14,19 @@ import top.yukonga.miuix.kmp.theme.LocalDismissState
 import top.yukonga.miuix.kmp.window.WindowDialog
 
 /**
- * 「壁纸重置提示」弹窗（2026-11-10，用户要求）。
+ * 「应用壁纸提示」弹窗（2026-11-11 改写；原名 WallpaperResetDialog 保留以减少改动）。
  *
- * ## 为什么要有这一弹
+ * ## 为什么还要弹
  *
- * Alive 的解锁动画（AOD→桌面 tr=2 球扩 / 锁屏→桌面内容交叉）画在**锁屏份**上，
- * 而锁屏份挂在「锁屏壁纸窗口」里：
+ * 应用 Alive 会把锁屏和桌面壁纸一起换成这张照片（作为底层基底）：
+ * 只有两份写成同一张静态图，锁屏那条独立壁纸才会消失，解锁动画和 AOD 才能正常显示。
+ * 这仍然是「会改掉用户壁纸」的操作，所以保留一次确认，但不再清回系统默认。
  *
- * * 系统锁屏壁纸走 `MiuiKeyguardPictorialWallpaper`（开景深）时，该窗口解锁即被收走
- *   ⇒ 动画画给空气（日志里 28~31 帧一帧不少，屏幕上看不见）；
- * * 系统与锁屏是**两张不同壁纸**时是两条独立 leash，换层时桌面份 buffer 陈旧 ⇒ 露系统壁纸。
+ * ## 和原作者 .81 那版的区别
  *
- * 两种状态都属于「壁纸组合不干净」。这里不去改挂载逻辑，而是**每次应用前把壁纸
- * 重置成系统默认**（与服务模式「恢复默认」同一条 `clear(FLAG_SYSTEM or FLAG_LOCK)`），
- * 让系统只剩一条共用 leash，从根上规避。
- *
- * ## 交互
- *
- * 无条件弹（不判断当前组合），因为判断本身要 root 读 `wallpaper_info.xml`，
- * 而重置的代价只是「壁纸变回系统默认」——用户在锁屏编辑里另建一个组合即可。
- * 确认按钮用**警示色**（`danger`），与「删除此搭配？」同级，提示这是破坏性操作。
+ * 他那一版是 clear(FLAG_SYSTEM or FLAG_LOCK) 回到系统默认再杀壁纸进程；实测在本机
+ * 锁屏那份仍是独立壁纸（id 397/396 不相等），Alive 依旧看不见。这里改成单次
+ * setBitmap(照片, SYSTEM|LOCK)，见 StaticBase.prepareAliveBase。
  */
 @Composable
 internal fun WallpaperResetDialog(
@@ -42,9 +35,8 @@ internal fun WallpaperResetDialog(
     onConfirm: () -> Unit,
 ) {
     WindowDialog(
-        title = "壁纸重置提示",
-        summary = "每次应用Alive壁纸时，都会重置到系统默认壁纸，" +
-            "建议在锁屏编辑专门新建一个壁纸组合防止原有壁纸被替换。如确定，请点击继续。",
+        title = "应用壁纸提示",
+        summary = "应用 Alive 壁纸后，锁屏与桌面的壁纸都会换成这张照片作为底层基底，这样解锁动画与 AOD 才能正常显示。原有壁纸会被这张照片替换，如确定，请点击继续。",
         show = show,
         onDismissRequest = onDismissRequest,
     ) {
