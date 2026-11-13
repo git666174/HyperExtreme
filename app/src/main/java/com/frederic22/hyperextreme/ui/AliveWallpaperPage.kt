@@ -1,6 +1,5 @@
 package com.frederic22.hyperextreme.ui
 
-import android.app.WallpaperManager
 import android.os.Handler
 import android.os.Looper
 import android.widget.Toast
@@ -42,10 +41,9 @@ import com.frederic22.hyperextreme.data.AliveControl
 import com.frederic22.hyperextreme.data.AodState
 import com.frederic22.hyperextreme.data.AliveFlag
 import com.frederic22.hyperextreme.data.AliveItem
+import com.frederic22.hyperextreme.wallpaper.StaticBase
 import com.frederic22.hyperextreme.data.AliveStore
 import com.frederic22.hyperextreme.data.MaskPrefs
-import com.frederic22.hyperextreme.data.RootShell
-import com.frederic22.hyperextreme.data.RunLog
 import com.frederic22.hyperextreme.data.WallpaperVersion
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -104,10 +102,8 @@ internal fun AliveWallpaperDetail(state: MaskUiState) {
     var conflictOther by remember { mutableStateOf<RunningWallpaper?>(null) }
     var busy by remember { mutableStateOf(false) }
     // 「壁纸重置提示」（2026-11-10）：pendingApply = 等确认的那张卡；
-    // resetting = 重置流程在跑（挡住重复点击）。
     var showWallpaperReset by remember { mutableStateOf(false) }
     var pendingApply by remember { mutableStateOf<AliveItem?>(null) }
-    var resetting by remember { mutableStateOf(false) }
 
     val prefs = remember { MaskPrefs(ctx) }
     var activeId by remember { mutableStateOf(prefs.aliveActiveId) }
@@ -190,10 +186,8 @@ internal fun AliveWallpaperDetail(state: MaskUiState) {
             showConflict = true
             return
         }
-        // **壁纸重置提示**（2026-11-10 用户要求）：无条件弹，确认并把壁纸重置成
-        // 系统默认之后才真正应用。原因见 [WallpaperResetDialog] 的类注释 ——
-        // 不干净的壁纸组合会让解锁动画寄生在「解锁即销毁」的锁屏壁纸窗口上，
-        // 或者让两条 leash 换层时露出系统壁纸。
+        // **应用提示**（2026-11-11 改写）：应用前把锁屏/桌面壁纸一起换成这张照片，
+        // 让两份共用同一条 leash。弹窗只做提示，不再把壁纸清回系统默认。
         pendingApply = item
         showWallpaperReset = true
     }
@@ -219,11 +213,25 @@ internal fun AliveWallpaperDetail(state: MaskUiState) {
         //    保留 `keyguard_foreground_layer` 只会把系统抠图留在屏幕上。现在推帧了。
         val hasDepth = prefs.aliveLockDepth &&
             (item.lockSubject != null || item.lockMask != null)
-        AliveFlag.push(
-            true, item.id, depth = hasDepth, style = item.style,
-            // 换图不改 id ⇒ 必须带上图片版本，否则渲染器不重启、新图进不了 GL
-            ver = item.imageVer,
-        )
+        // 基底换成这张照片本身，**单次 setBitmap(SYSTEM|LOCK)** —— 等价于用户手动「相册选图 →
+        // 同时设置桌面和锁屏」。MIUI 上分两次写只改桌面、`clear(both)` 又只退回默认壁纸
+        // （锁屏仍是 pictorial 那层），只有这条路锁屏才真的能显示（2026-11-11 真机实测）。
+        val baseCtx = ctx.applicationContext ?: ctx
+        val aliveDepth = hasDepth
+        val aliveStyle = item.style
+        val aliveVer = item.imageVer
+        Thread {
+            runCatching {
+                val baseFile = item.effectiveDesktop ?: item.lock
+                val bmp = baseFile?.let { android.graphics.BitmapFactory.decodeFile(it.absolutePath) }
+                try {
+                    StaticBase.prepareAliveBase(baseCtx, bmp, "应用 Alive 壁纸前")
+                } finally {
+                    bmp?.recycle()
+                }
+            }
+            AliveFlag.pushBlocking(true, item.id, depth = aliveDepth, style = aliveStyle, ver = aliveVer)
+        }.apply { isDaemon = true }.start()
         // 记「壁纸基准」：aod 侧换壁纸检测拿它当比对值
         val app = ctx.applicationContext ?: ctx
         Thread {
@@ -569,39 +577,7 @@ internal fun AliveWallpaperDetail(state: MaskUiState) {
             showWallpaperReset = false
             val target = pendingApply
             pendingApply = null
-            if (target != null && !resetting) {
-                resetting = true
-                // 重置壁纸 + 重建壁纸层要好几秒，先给个反馈（2026-11-10 用户要求）
-                Toast.makeText(ctx, "正在应用请稍后", Toast.LENGTH_LONG).show()
-                Thread {
-                    val ok = runCatching {
-                        // 1) 先停渲染器：它正攥着即将被销毁的壁纸 leash
-                        if (prefs.aliveActiveId.isNotEmpty()) AliveControl.disable(ctx, null)
-                        // 2) 回到**系统默认**壁纸 —— 与服务模式「恢复默认」同一条路。
-                        //    只清 FLAG_LOCK 会保留当前系统壁纸，与「重置到系统默认」不符
-                        //    （2026-11-10 用户确认用 both）。
-                        WallpaperManager.getInstance(ctx).clear(
-                            WallpaperManager.FLAG_SYSTEM or WallpaperManager.FLAG_LOCK,
-                        )
-                        // 3) 等壁纸服务重建壁纸层：不重建的话旧 `he-alive-*` 会残留
-                        Thread.sleep(1200L)
-                        RootShell.run("killall com.miui.miwallpaper")
-                        Thread.sleep(1800L)
-                    }.isSuccess
-                    if (!ok) {
-                        RunLog.append(
-                            ctx,
-                            "壁纸重置",
-                            listOf("clear 或 killall 失败，照常继续应用"),
-                            ok = false,
-                        )
-                    }
-                    Handler(Looper.getMainLooper()).post {
-                        resetting = false
-                        applyNow(target)
-                    }
-                }.apply { isDaemon = true }.start()
-            }
+            if (target != null) applyNow(target)
         },
     )
 }

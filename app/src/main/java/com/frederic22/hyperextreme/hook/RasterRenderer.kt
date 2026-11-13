@@ -577,7 +577,7 @@ internal object RasterRenderer {
         )
 
         // 五、挂到壁纸 leash
-        attachToLeash(scope)
+        attachToLeashWithRetry(scope)
 
         startSensor(ctx)
         watchScreen(ctx)
@@ -656,7 +656,7 @@ internal object RasterRenderer {
             )
             setDeskOnlyAlpha(if (showingDesktop) 1f else 0f, force = true)
         }
-        if (kept.size != mounts.size) {
+        if (kept.size != mounts.size && kept.isNotEmpty()) {
             val drop = mounts.filter { it !in kept }
             runCatching {
                 val tx2 = txClass.getConstructor().newInstance()
@@ -674,7 +674,42 @@ internal object RasterRenderer {
             mounts.clear()
             mounts.addAll(kept)
         }
-        check(mounts.isNotEmpty()) { "全部目标挂载失败（scope=$scope）" }
+        // **判据必须是 kept**（2026-11-11 真机日志）：为了「重试时保留 mounts」，上面的清理改成了 kept 为空不清列表；但 check 还在看 mounts ⇒ 全挂失败也当成功，渲染器带着未挂载的 SurfaceControl 继续跑（日志「挂载跳过 ×2」紧跟「渲染器已启动」），屏幕全黑。
+        check(kept.isNotEmpty()) { "全部目标挂载失败（scope=$scope）" }
+    }
+
+    /**
+     * 挂载重试（2026-11-11 真机日志）：壁纸进程重建的那一瞬间，
+     * `WindowManagerGlobal#getWallpaperByShowWhenLocked` 还拿不到 token，一次性挂载会直接判
+     * 「全部目标挂载失败」并把渲染器停掉。日志实证：
+     * `挂载跳过：没有 leash（锁屏 leash=false，桌面 leash=false）` 之后约 200ms，
+     * `com.miui.miwallpaper` 才重新加载完 —— 用户看到的就是「点应用没反应，得再点一次」。
+     *
+     * 这里按 250ms 间隔重试最多 8 次（约 2s）；失败期间**保留**上一轮 mounts（见调用方上方的
+     * `kept.isNotEmpty()` 判据），否则第二次从空列表起手，永远挂不上。
+     */
+    private fun attachToLeashWithRetry(scope: Int) {
+        var attempt = 0
+        while (true) {
+            try {
+                attachToLeash(scope)
+                if (attempt > 0) HookRuntime.log("RASTER 挂载重试成功（第 ${attempt + 1} 次）")
+                return
+            } catch (e: IllegalStateException) {
+                attempt++
+                if (attempt >= 8) {
+                    HookRuntime.log("RASTER 挂载重试耗尽（8 次 ≈ 2s），放弃：${e.message}")
+                    throw e
+                }
+                HookRuntime.log("RASTER 壁纸层未就绪（$attempt/8），250ms 后重试：${e.message}")
+                try {
+                    Thread.sleep(250L)
+                } catch (ie: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    throw e
+                }
+            }
+        }
     }
 
     // ───────────────────────────── 停止 ─────────────────────────────

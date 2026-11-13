@@ -135,6 +135,7 @@ internal object AliveAodHost {
      */
     fun onAodViewAttached(view: View) {
         if (!isAodRoot(view)) return
+        if (Coexist.mcMusicScreen) return
         note(
             "AODView 入窗：class=${view.javaClass.name} bg=${describe(view.background)} " +
                 "visibility=${view.visibility} alive=${isAlive()}",

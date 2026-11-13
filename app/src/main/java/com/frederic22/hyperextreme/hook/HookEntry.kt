@@ -48,6 +48,7 @@ class HookEntry : XposedModule() {
         if (param.processName == SYSTEM_UI_PACKAGE) {
             HookRuntime.log("SystemUI 进程已加载模块，等 onPackageReady 提供宿主 classLoader")
             startSystemUiLoaderFallback()
+            runCatching { MusicWatch.start() }
         }
     }
 

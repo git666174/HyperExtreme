@@ -92,6 +92,7 @@ internal object SpatialAod {
             m.isAccessible = true
             module.hook(m).intercept(object : XposedInterface.Hooker {
                 override fun intercept(chain: XposedInterface.Chain): Any? {
+                    if (Coexist.mcMusicScreen) return chain.proceed()
                     val args = chain.getArgs()
                     // 参数：(boolean show, float black, int type, boolean anim, AnimationTracker)
                     // ⚠️ 不假定下标：getArgs() 可能带接收者，按类型/位置兜底取。

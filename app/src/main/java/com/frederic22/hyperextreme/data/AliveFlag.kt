@@ -71,12 +71,43 @@ object AliveFlag {
             "setprop $PROP_DEPTH ${if (active && depth) 1 else 0}; " +
             "setprop $PROP_STYLE ${if (active) style else 0}; " +
             "setprop $PROP_VER ${if (active) ver else ""}"
-        Thread {
-            val r = runCatching { RootShell.run(script) }.getOrNull()
-            if (r == null || !r.ok) {
-                android.util.Log.w("HyperExtreme", "AliveFlag: setprop 失败（${r?.output?.take(160) ?: "异常"}）")
-            }
-        }.start()
+        Thread { runScript(script) }.start()
+    }
+
+    /**
+     * 同步版：调用方需要保证「先重建壁纸层、再下发」的顺序时用（2026-11-11）。
+     * 异步版每次 `su` 都要排队，顺序不可控 —— 重启 miwallpaper 之后可能反而先下发、后重启。
+     */
+    internal fun pushBlocking(
+        active: Boolean,
+        key: String?,
+        scope: Int = MaskPrefs.SPATIAL_SCOPE_GLOBAL,
+        depth: Boolean = false,
+        style: Int = AliveStore.STYLE_QIHANG,
+        ver: String = "",
+    ): Boolean = runCatching {
+        RootShell.run(scriptOf(active, key, scope, depth, style, ver)).ok
+    }.getOrDefault(false)
+
+    private fun scriptOf(
+        active: Boolean,
+        key: String?,
+        scope: Int,
+        depth: Boolean,
+        style: Int,
+        ver: String,
+    ): String = "setprop $PROP_ACTIVE ${if (active) 1 else 0}; " +
+        "setprop $PROP_KEY ${key.orEmpty()}; " +
+        "setprop $PROP_SCOPE $scope; " +
+        "setprop $PROP_DEPTH ${if (active && depth) 1 else 0}; " +
+        "setprop $PROP_STYLE ${if (active) style else 0}; " +
+        "setprop $PROP_VER ${if (active) ver else ""}"
+
+    private fun runScript(script: String) {
+        val r = runCatching { RootShell.run(script) }.getOrNull()
+        if (r == null || !r.ok) {
+            android.util.Log.w("HyperExtreme", "AliveFlag: setprop 失败（${r?.output?.take(160) ?: "异常"}）")
+        }
     }
 
     /** 渲染器自报"正在出帧"（只用于诊断）。 */
