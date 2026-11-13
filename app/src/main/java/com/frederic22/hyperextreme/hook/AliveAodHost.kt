@@ -133,14 +133,51 @@ internal object AliveAodHost {
      *
      * 这里做两件事：打一条诊断（背景到底是不是纯黑 / 到底是不是它盖的），以及在 Alive 生效时置空。
      */
+    private var lastAttachAt = 0L
+
     fun onAodViewAttached(view: View) {
         if (!isAodRoot(view)) return
+        if (Coexist.mcMusicScreen) {
+            note("AODView 入窗：MC 音乐屏在显示 ⇒ 不动它（彻底让路）")
+            return
+        }
+        // 诊断「AOD 里出现两个日期」（2026-11-11）：看桌面锁屏那条路是否会连着挂两个 AODView。
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - lastAttachAt < 1500L) {
+            note("AODView 重复入窗（间隔 " + (now - lastAttachAt) + "ms）：class=" + view.javaClass.name)
+        }
+        lastAttachAt = now
         note(
             "AODView 入窗：class=${view.javaClass.name} bg=${describe(view.background)} " +
                 "visibility=${view.visibility} alive=${isAlive()}",
         )
         if (!isAlive()) return
+        // 诊断「AOD 里两个日期」（2026-11-11）：把 AODView 里带文字的节点打出来，
+        // 看是两个时钟都在这棵树里，还是其中一个来自别的窗口。
+        if (view.background != null) runCatching { logAodTree(view) }
         view.setBackgroundColor(0)
+    }
+
+    /** 打印 AOD 视图树里带文字的节点（类名 + 文本 + 可见性），只看前 3 层、最多 10 条。 */
+    private fun logAodTree(root: View) {
+        val out = ArrayList<String>(10)
+        fun walk(v: View, depth: Int) {
+            if (depth > 3 || out.size >= 10) return
+            if (v is android.widget.TextView) {
+                val t = v.text?.toString().orEmpty().replace("\n", " ")
+                if (t.isNotBlank()) {
+                    out.add(
+                        v.javaClass.simpleName + "[vis=" + v.visibility + ",a=" + v.alpha +
+                            "]=\"" + t.take(24) + "\"",
+                    )
+                }
+            }
+            if (v is android.view.ViewGroup) {
+                for (i in 0 until v.childCount) walk(v.getChildAt(i), depth + 1)
+            }
+        }
+        walk(root, 0)
+        note("AOD 文本节点(" + out.size + "): " + out.joinToString(" | "))
     }
 
     private fun isAodRoot(target: Any?): Boolean {

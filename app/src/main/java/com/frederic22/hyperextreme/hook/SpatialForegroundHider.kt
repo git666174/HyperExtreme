@@ -72,6 +72,9 @@ internal object SpatialForegroundHider {
 
     /** 当前 Alive 卡是否带锁屏景深主体（`enabled()` 里顺手算好，`handle()` 直接用）。 */
     @Volatile private var aliveDepthOn = false
+
+    /** 最近一次 hook 到的 KeyguardPanelViewController，供音乐屏状态变化时重算。 */
+    @Volatile private var lastSelf: Any? = null
     private const val CACHE_MS = 300L
 
     private fun enabled(): Boolean {
@@ -151,6 +154,11 @@ internal object SpatialForegroundHider {
             false
         }
         if (ok) log("已挂上（锁屏/全局档时接管 keyguard_foreground_layer）")
+        Coexist.onChanged = {
+            mainHandler.post {
+                lastSelf?.let { runCatching { handle(it) } }
+            }
+        }
         return ok
     }
 
@@ -166,12 +174,25 @@ internal object SpatialForegroundHider {
      * 亮灭屏 / 退出 / pre-hide 全部走系统原逻辑。
      */
     private fun handle(self: Any) {
+        lastSelf = self
         // **先同步 AOD 模式**（2026-10-30，v1.5.78）：只有「与锁屏一致」模式下系统才会
         // 把壁纸 leash 预放大到 1.05，AGSL 主体要跟着；自定义模式下 leash 是 1.0。
         // 放在 visibility 检查之前 —— 层不可见时也要把模式记下来。
         runCatching { syncLeashScale(self) }
         val field = self.javaClass.getDeclaredField(FIELD_FOREGROUND).apply { isAccessible = true }
         val layer = field.get(self) as? android.view.ViewGroup ?: return
+        // ⚠️ 顺序很关键（2026-11-11）：这一层平时被我们压成 INVISIBLE，如果把 Coexist 判断
+        // 放在下面那个 visibility 闸门之后，音乐屏出现时闸门直接 return ⇒ 永远走不到放行分支，
+        // 歌词也就永远出不来。所以先判音乐屏，再判可见性。
+        if (Coexist.mcMusicScreen) {
+            SpatialOverlay.onDisabled()
+            RasterOverlay.onDisabled()
+            AliveOverlay.onDisabled()
+            AliveOverlay.detachSystemSubject(layer)
+            if (layer.visibility != View.VISIBLE) layer.visibility = View.VISIBLE
+            logOnceMusic()
+            return
+        }
         if (layer.visibility != View.VISIBLE) return
 
         if (SpatialOverlay.active() || RasterOverlay.active()) {
@@ -221,6 +242,12 @@ internal object SpatialForegroundHider {
                     }
                 }
             }
+        }
+    }
+
+    private fun logOnceMusic() {
+        if (logged.putIfAbsent("music", true) == null) {
+            log("MC 音乐屏在显示：前景层保持 VISIBLE（不压歌词）")
         }
     }
 

@@ -42,6 +42,7 @@ import com.frederic22.hyperextreme.data.AliveControl
 import com.frederic22.hyperextreme.data.AodState
 import com.frederic22.hyperextreme.data.AliveFlag
 import com.frederic22.hyperextreme.data.AliveItem
+import com.frederic22.hyperextreme.wallpaper.StaticBase
 import com.frederic22.hyperextreme.data.AliveStore
 import com.frederic22.hyperextreme.data.MaskPrefs
 import com.frederic22.hyperextreme.data.RootShell
@@ -219,11 +220,25 @@ internal fun AliveWallpaperDetail(state: MaskUiState) {
         //    保留 `keyguard_foreground_layer` 只会把系统抠图留在屏幕上。现在推帧了。
         val hasDepth = prefs.aliveLockDepth &&
             (item.lockSubject != null || item.lockMask != null)
-        AliveFlag.push(
-            true, item.id, depth = hasDepth, style = item.style,
-            // 换图不改 id ⇒ 必须带上图片版本，否则渲染器不重启、新图进不了 GL
-            ver = item.imageVer,
-        )
+        // 基底换成这张照片本身，**单次 setBitmap(SYSTEM|LOCK)** —— 等价于用户手动「相册选图 →
+        // 同时设置桌面和锁屏」。MIUI 上分两次写只改桌面、`clear(both)` 又只退回默认壁纸
+        // （锁屏仍是 pictorial 那层），只有这条路锁屏才真的能显示（2026-11-11 真机实测）。
+        val baseCtx = ctx.applicationContext ?: ctx
+        val aliveDepth = hasDepth
+        val aliveStyle = item.style
+        val aliveVer = item.imageVer
+        Thread {
+            runCatching {
+                val baseFile = item.effectiveDesktop ?: item.lock
+                val bmp = baseFile?.let { android.graphics.BitmapFactory.decodeFile(it.absolutePath) }
+                try {
+                    StaticBase.prepareAliveBase(baseCtx, bmp, "应用 Alive 壁纸前")
+                } finally {
+                    bmp?.recycle()
+                }
+            }
+            AliveFlag.pushBlocking(true, item.id, depth = aliveDepth, style = aliveStyle, ver = aliveVer)
+        }.apply { isDaemon = true }.start()
         // 记「壁纸基准」：aod 侧换壁纸检测拿它当比对值
         val app = ctx.applicationContext ?: ctx
         Thread {

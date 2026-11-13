@@ -149,6 +149,17 @@ internal object AliveRenderer {
         var eglSurface: EGLSurface? = null,
     )
 
+    /**
+     * 听歌时给 HyperMusicCover 让路（2026-11-11）。两个模块抢同一块壁纸层：
+     * 它把封面/歌词画进壁纸纹理，我们把 SurfaceControl reparent 到壁纸表面之上 => 互相盖。
+     * 不做 IPC，只按「本机装了 MusicCover + 系统正在放音乐」让路（alpha 归零）。
+     */
+    private var musicYield = false
+    private var yieldCandidate = false
+    private var mcPresent = false
+
+    private fun effectiveAlpha(a: Float): Float = if (musicYield) 0f else a
+
     private val mounts = ArrayList<Mount>(2)
     private var display: EGLDisplay? = null
     private var context: EGLContext? = null
@@ -585,8 +596,9 @@ internal object AliveRenderer {
         )
 
         // 七、挂到壁纸 leash
-        attachToLeash(scope)
+        attachToLeashWithRetry(scope)
 
+        startMusicWatch()
         watchScreen(appCtx!!)
         AliveFlag.pushRendering(true)
         scheduleFrame()
@@ -597,6 +609,87 @@ internal object AliveRenderer {
     }
 
     // ───────────────────────────── 挂载（与光栅逐条同构）─────────────────────────────
+
+    /** 这次挂到的 leash 是不是「景深壁纸」(pictorial)：锁屏上 hidden，等于看不见。 */
+    private var leashPictorial = false
+
+    /** 上一次探测到的音乐视图串（只在变化时打日志，避免刷屏）。 */
+    private var lastMusicViewLog = ""
+
+    /**
+     * 探测「音乐锁屏/歌词」是不是真的显示出来了（2026-11-11，给 MusicCover 共存用）。
+     *
+     * 现状：只要在放歌就让路，太粗 —— 用户实测 MC 只有「锁屏双指点击」之后才真的显示封面/歌词。
+     * 这一版只**观测**：反射拿到 WindowManagerGlobal.mViews，遍历各窗口的视图树，
+     * 把类名含 music / lyric / cover 的节点和它们的 visibility/alpha 打出来，
+     * 靠这份日志找一个可靠判据，再决定让路时机。
+     */
+    private fun probeMusicViews(): Boolean {
+        val found = ArrayList<String>(8)
+        var anyVisible = false
+        runCatching {
+            val cl = Class.forName("android.view.WindowManagerGlobal", false, javaClass.classLoader)
+            val inst = cl.getMethod("getInstance").invoke(null)
+            val f = cl.getDeclaredField("mViews").apply { isAccessible = true }
+            val views = f.get(inst) as? List<*> ?: return@runCatching
+            fun walk(v: android.view.View, depth: Int) {
+                if (depth > 8 || found.size >= 12) return
+                val n = v.javaClass.name
+                if (n.contains("music", true) || n.contains("lyric", true) || n.contains("cover", true)) {
+                    // 用 isShown：它连父链 visibility / attached 一起算。只看 v.visibility
+                    // 的话，退出音乐屏后视图仍挂着 VISIBLE，让路一直不恢复（2026-11-11 实测）。
+                    val visible = v.isShown && v.alpha > 0.05f
+                    if (visible) anyVisible = true
+                    found.add(n.substringAfterLast('.') + "(vis=" + v.visibility + ",a=" + v.alpha + ")")
+                }
+                if (v is android.view.ViewGroup) {
+                    for (i in 0 until v.childCount) walk(v.getChildAt(i), depth + 1)
+                }
+            }
+            for (v in views) (v as? android.view.View)?.let { walk(it, 0) }
+        }
+        val line = found.joinToString(" | ")
+        if (line != lastMusicViewLog) {
+            lastMusicViewLog = line
+            HookRuntime.log("$TAG 音乐视图探测：" + if (line.isEmpty()) "（无）" else line)
+        }
+        return anyVisible
+    }
+
+    /** 装了 HyperMusicCover 才轮询；1s 一次，开销可以忽略。 */
+    private fun startMusicWatch() {
+        mcPresent = runCatching {
+            appCtx?.packageManager?.getPackageInfo("com.github.zyl6932.HyperMusicCover", 0) != null
+        }.getOrDefault(false)
+        HookRuntime.log("$TAG 听歌让路：MusicCover 已安装=$mcPresent")
+        if (!mcPresent) return
+        val h = ensureHandler()
+        val task = object : Runnable {
+            override fun run() {
+                if (runningKey == null) return
+                val playing = runCatching {
+                    (appCtx?.getSystemService(android.content.Context.AUDIO_SERVICE)
+                        as? android.media.AudioManager)?.isMusicActive == true
+                }.getOrDefault(false)
+                // 判据（2026-11-11 真机）：MC 真正接管屏幕时，窗口里会出现可见的 MusicBgView
+                // （日志 音乐视图探测：MusicBgView(vis=0,a=1.0)）；单纯在放歌还不足以让路。
+                // 暂停播放时音乐屏同样会显示壁纸/歌词（只是不动），所以探测不再依赖 playing
+                // 音乐屏状态由常驻的 MusicWatch 维护（与渲染器生命周期解耦，2026-11-11），
+                // 这里只负责把 alpha 跟上。
+                val shouldYield = Coexist.mcMusicScreen
+                if (shouldYield != musicYield) {
+                    musicYield = shouldYield
+                    HookRuntime.log("$TAG 音乐屏" + (if (shouldYield) "接管 >> 让路（alpha->0）" else "退出 >> 恢复（alpha->1）"))
+                    // 让路时把叠加视图也一起收掉（2026-11-11）：只压 alpha 不够，
+                    // 我们插进前景层的 View 仍可能压住 MC 的歌词。
+                    if (shouldYield) runCatching { AliveOverlay.onDisabled() }
+                    applyAlphaBoth(1f, 1f)
+                }
+                h.postDelayed(this, 300L)
+            }
+        }
+        h.postDelayed(task, 1000L)
+    }
 
     private fun attachToLeash(scope: Int) {
         val wmgClass = Class.forName("android.view.WindowManagerGlobal", false, javaClass.classLoader)
@@ -623,6 +716,19 @@ internal object AliveRenderer {
         val leashes = HashMap<Boolean, Any?>()
         leashes[true] = leashOf(true)
         leashes[false] = leashOf(false)
+        runCatching {
+            HookRuntime.log("$TAG leash 探测：lock=${leashes[true]} desk=${leashes[false]}")
+        }
+        runCatching {
+            val wm = android.app.WallpaperManager.getInstance(appCtx)
+            val ids = "system=${wm.getWallpaperId(android.app.WallpaperManager.FLAG_SYSTEM)} " +
+                "lock=${wm.getWallpaperId(android.app.WallpaperManager.FLAG_LOCK)}"
+            HookRuntime.log("$TAG 壁纸 id：$ids")
+        }
+        leashPictorial = runCatching {
+            listOfNotNull(leashes[true], leashes[false])
+                .any { it.toString().contains("PictorialWallpaper") }
+        }.getOrDefault(false)
         val hasLockMount = mounts.any { it.locked }
         val shared = leashes[false] == null && mounts.any { !it.locked } && leashes[true] != null
         sharedLeash = shared
@@ -657,7 +763,7 @@ internal object AliveRenderer {
         }
         runCatching { txClass.getMethod("apply").invoke(tx) }
 
-        if (kept.size != mounts.size) {
+        if (kept.size != mounts.size && kept.isNotEmpty()) {
             val drop = mounts.filter { it !in kept }
             runCatching {
                 val tx2 = txClass.getConstructor().newInstance()
@@ -675,7 +781,52 @@ internal object AliveRenderer {
             mounts.clear()
             mounts.addAll(kept)
         }
-        check(mounts.isNotEmpty()) { "全部目标挂载失败（scope=$scope）" }
+        // **判据必须是 kept**（2026-11-11 真机日志）：为了「重试时保留 mounts」，上面的清理改成了 kept 为空不清列表；但 check 还在看 mounts ⇒ 全挂失败也当成功，渲染器带着未挂载的 SurfaceControl 继续跑（日志「挂载跳过 ×2」紧跟「渲染器已启动」），屏幕全黑。
+        check(kept.isNotEmpty()) { "全部目标挂载失败（scope=$scope）" }
+    }
+
+    /**
+     * 挂载重试（2026-11-11 真机日志）。两个坑一起治：
+     *
+     * 1. 壁纸进程重建的瞬间 `getWallpaperByShowWhenLocked` 还拿不到 token，一次性挂载会直接判
+     *    「全部目标挂载失败」并把渲染器停掉（20:03:59 实测：200ms 后 miwallpaper 才加载完）。
+     * 2. **挂上了也不一定看得见**：MIUI 开景深时锁屏壁纸是 `MiuiKeyguardPictorialWallpaper`
+     *    那条 surface，它在锁屏上是 hidden 的 —— 帧照画、屏幕没有。日志里同一张卡两次应用：
+     *    20:33:23 挂在 `MiuiKeyguardPictorialWallpaper`，20:33:45 才是 `ImageWallpaper`。
+     *    所以挂到 pictorial 上只算「挂上了但不可见」，继续等到静态 `ImageWallpaper` 重建完成。
+     *
+     * 合计最多 12 次 × 250ms ≈ 3s；最后一次不论是不是 pictorial 都收工（用户自己的景深壁纸
+     * 也不该被无限期等下去）。
+     */
+    private fun attachToLeashWithRetry(scope: Int) {
+        var attempt = 0
+        while (true) {
+            val mounted = try {
+                attachToLeash(scope)
+                true
+            } catch (e: IllegalStateException) {
+                HookRuntime.log("$TAG 壁纸层未就绪（${attempt + 1}/12），250ms 后重试：${e.message}")
+                false
+            }
+            if (mounted && !leashPictorial) {
+                if (attempt > 0) HookRuntime.log("$TAG 挂载重试成功（第 ${attempt + 1} 次）")
+                return
+            }
+            if (mounted && leashPictorial) {
+                HookRuntime.log("$TAG 挂在景深壁纸(pictorial)上（不可见），等静态 ImageWallpaper（${attempt + 1}/12）")
+            }
+            attempt++
+            if (attempt >= 12) {
+                HookRuntime.log("$TAG 挂载重试耗尽（12 次 ≈ 3s），按当前 leash 继续")
+                return
+            }
+            try {
+                Thread.sleep(250L)
+            } catch (ie: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return
+            }
+        }
     }
 
     // ───────────────────────────── 帧循环 ─────────────────────────────
@@ -692,6 +843,7 @@ internal object AliveRenderer {
         framePosted = false
         try {
             if (runningKey == null) return@FrameCallback
+            if (musicYield) return@FrameCallback
             val now = SystemClock.elapsedRealtime()
             val dtSec = if (lastTickAt == 0L) 0f else (now - lastTickAt) / 1000f
             lastTickAt = now
@@ -1605,7 +1757,9 @@ internal object AliveRenderer {
      * （2026-11-08 报的「锁屏→桌面过渡时中间闪一下」）。
      */
     private fun applyAlphaBoth(lockA: Float, deskA: Float) {
-        currentAlpha = lockA
+        val lockAlpha = effectiveAlpha(lockA)
+        val deskAlpha = effectiveAlpha(deskA)
+        currentAlpha = lockAlpha
         dirty = true
         val l = lockScs()
         val d = deskScs()
@@ -1618,13 +1772,15 @@ internal object AliveRenderer {
             val setAlpha = txClass.getMethod(
                 "setAlpha", android.view.SurfaceControl::class.java, Float::class.javaPrimitiveType,
             )
-            for (sc in l) runCatching { setAlpha.invoke(tx, sc, lockA) }
-            for (sc in d) runCatching { setAlpha.invoke(tx, sc, deskA) }
+            for (sc in l) runCatching { setAlpha.invoke(tx, sc, lockAlpha) }
+            for (sc in d) runCatching { setAlpha.invoke(tx, sc, deskAlpha) }
             txClass.getMethod("apply").invoke(tx)
         }
     }
 
-    private fun applyAlpha(scs: List<android.view.SurfaceControl>, a: Float) {        currentAlpha = a
+    private fun applyAlpha(scs: List<android.view.SurfaceControl>, a: Float) {
+        val alpha = effectiveAlpha(a)
+        currentAlpha = alpha
         dirty = true
         if (scs.isEmpty()) return
         runCatching {
@@ -1635,7 +1791,7 @@ internal object AliveRenderer {
             val setAlpha = txClass.getMethod(
                 "setAlpha", android.view.SurfaceControl::class.java, Float::class.javaPrimitiveType,
             )
-            for (sc in scs) runCatching { setAlpha.invoke(tx, sc, a) }
+            for (sc in scs) runCatching { setAlpha.invoke(tx, sc, alpha) }
             txClass.getMethod("apply").invoke(tx)
         }
     }
@@ -2514,6 +2670,10 @@ internal object AliveRenderer {
     }
 
     private fun stopInternal(reason: String) {
+        if (Coexist.mcMusicScreen) {
+            Coexist.mcMusicScreen = false
+            Coexist.onChanged?.invoke()
+        }
         val had = runningKey != null
         runningKey = null
         runningScope = -1
