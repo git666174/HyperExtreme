@@ -51,7 +51,7 @@ import com.frederic22.hyperextreme.data.AliveFlag
  */
 internal object AliveOverlay {
 
-    private const val AUTHORITY = "com.frederic22.hyperextreme.provider"
+    private const val AUTHORITY = "com.frederic22.hyperextreme.alive.provider"
     private const val ID_DEDUCTED = "deducted_image_view"
     private const val SYSTEMUI_PKG = "com.android.systemui"
 

@@ -1607,7 +1607,7 @@ class HookEntry : XposedModule() {
     private companion object {
         const val TAG = "HyperExtreme"
         const val TARGET_PACKAGE = "com.miui.aod"
-        const val MODULE_PACKAGE = "com.frederic22.hyperextreme"
+        const val MODULE_PACKAGE = "com.frederic22.hyperextreme.alive"
 
         /**
          * 手工维护的构建标记 —— 只为了在日志里一眼看出"装的到底是哪一版"。

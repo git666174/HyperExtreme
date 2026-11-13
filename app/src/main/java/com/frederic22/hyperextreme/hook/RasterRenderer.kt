@@ -61,7 +61,7 @@ import kotlin.math.roundToInt
  */
 internal object RasterRenderer {
 
-    private const val AUTHORITY = "com.frederic22.hyperextreme.provider"
+    private const val AUTHORITY = "com.frederic22.hyperextreme.alive.provider"
 
     // ───────────────────────────── 线程 / 生命周期 ─────────────────────────────
 

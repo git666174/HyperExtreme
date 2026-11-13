@@ -59,7 +59,7 @@ import kotlin.math.abs
 internal object AliveRenderer {
 
     private const val TAG = "ALIVE"
-    private const val AUTHORITY = "com.frederic22.hyperextreme.provider"
+    private const val AUTHORITY = "com.frederic22.hyperextreme.alive.provider"
 
     /**
      * 留光的取景框高度 / 屏高（`LIUGUANG_FRAG` 的 `uContentZoom`）。
