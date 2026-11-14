@@ -599,6 +599,7 @@ internal object AliveRenderer {
         attachToLeashWithRetry(scope)
 
         startMusicWatch()
+        startLeashWatch(scope)
         watchScreen(appCtx!!)
         AliveFlag.pushRendering(true)
         scheduleFrame()
@@ -609,6 +610,53 @@ internal object AliveRenderer {
     }
 
     // ───────────────────────────── 挂载（与光栅逐条同构）─────────────────────────────
+
+    /** 当前挂着的 leash 签名（用于发现壁纸进程重建后的层替换）。 */
+    private var attachedLeashSig: String? = null
+
+    /** 壁纸层看门狗（2026-11-14）：miwallpaper 重启/换壁纸后 leash 会换，旧 SC 被孤立。 */
+    private var leashWatch: Runnable? = null
+
+    /**
+     * 每 3s 比对一次当前 leash 与挂载时的 leash：不一致说明壁纸层被重建，
+     * 之前的 SurfaceControl 已经不在屏幕上（表现就是锁屏/AOD 忽然没有 Alive）。
+     * 这里直接按新 leash 重新挂载，不用用户再点一次应用。
+     */
+    private fun startLeashWatch(scope: Int) {
+        val h = ensureHandler()
+        leashWatch?.let { h.removeCallbacks(it) }
+        val task = object : Runnable {
+            override fun run() {
+                if (runningKey == null) return
+                val now = runCatching { probeLeashSig() }.getOrNull()
+                if (now != null && attachedLeashSig != null && now != attachedLeashSig) {
+                    HookRuntime.log(
+                        "$TAG 壁纸层已变化，重新挂载：old=" + attachedLeashSig + " new=" + now,
+                    )
+                    runCatching { attachToLeashWithRetry(scope) }.onFailure {
+                        HookRuntime.log("$TAG 重新挂载失败：" + it.javaClass.simpleName + ": " + it.message)
+                    }
+                }
+                h.postDelayed(this, 3000L)
+            }
+        }
+        leashWatch = task
+        h.postDelayed(task, 3000L)
+    }
+
+    /** 只探测锁屏/桌面的 leash 签名，不产生任何副作用。 */
+    private fun probeLeashSig(): String? {
+        val cls = Class.forName("android.view.WindowManagerGlobal", false, javaClass.classLoader)
+        val inst = cls.getMethod("getInstance").invoke(null)
+        val gw = cls.getMethod(
+            "getWallpaperByShowWhenLocked",
+            Int::class.javaPrimitiveType,
+            Boolean::class.javaPrimitiveType,
+        )
+        val token = runCatching { gw.invoke(inst, 0, true) }.getOrNull() ?: return null
+        val leash = runCatching { token.javaClass.getMethod("getLeash").invoke(token) }.getOrNull()
+        return leash?.toString()
+    }
 
     /** 这次挂到的 leash 是不是「景深壁纸」(pictorial)：锁屏上 hidden，等于看不见。 */
     private var leashPictorial = false
@@ -716,6 +764,7 @@ internal object AliveRenderer {
         val leashes = HashMap<Boolean, Any?>()
         leashes[true] = leashOf(true)
         leashes[false] = leashOf(false)
+        attachedLeashSig = (leashes[true] ?: leashes[false])?.toString()
         runCatching {
             HookRuntime.log("$TAG leash 探测：lock=${leashes[true]} desk=${leashes[false]}")
         }
@@ -816,9 +865,12 @@ internal object AliveRenderer {
                 HookRuntime.log("$TAG 挂在景深壁纸(pictorial)上（不可见），等静态 ImageWallpaper（${attempt + 1}/12）")
             }
             attempt++
-            if (attempt >= 12) {
-                HookRuntime.log("$TAG 挂载重试耗尽（12 次 ≈ 3s），按当前 leash 继续")
-                return
+            if (attempt >= 30) {
+                // 2026-11-14：killall miwallpaper 之后壁纸层最长要 5s 以上才重建完；
+                // 原来的 12 次（≈3s）会在层还没起来时耗尽，然后「按当前 leash 继续」——
+                // 实际上一个都没挂上，渲染器空跑，锁屏/AOD 就是「偶尔失效」的样子。
+                HookRuntime.log("$TAG 挂载重试耗尽（30 次 ≈ 7.5s）仍未挂上，判为启动失败")
+                throw IllegalStateException("挂载重试耗尽且没有可用 leash")
             }
             try {
                 Thread.sleep(250L)
@@ -2686,6 +2738,8 @@ internal object AliveRenderer {
         choreographer?.removeFrameCallback(frameCallback)
         unregisterScreen()
         runCatching { AliveFlag.pushRendering(false) }
+        leashWatch?.let { handler?.removeCallbacks(it); leashWatch = null }
+        attachedLeashSig = null
         // 景深主体层：撤掉我们的图（层本身还给系统）
         runCatching { AliveOverlay.onDisabled() }
 
