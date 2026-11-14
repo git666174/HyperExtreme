@@ -425,6 +425,17 @@ class HookEntry : XposedModule() {
                             HookRuntime.log("ALIVE 息屏显示已开启 → 恢复（按属性重启渲染器）")
                         }
                         if (active && key.isNotEmpty()) {
+                            // 2026-11-14：启动失败（壁纸层没就绪）会让渲染器自行 stop，
+                            // 但 lastKey 还留着 ⇒ 之后属性不变就再也不会重启，表现是
+                            // 「锁屏/AOD 偶尔没有 Alive」。这里发现「记录在运行、实际没在跑」
+                            // 就清掉记录，让下一次 tick 重新拉起。
+                            if (lastKey != null && !AliveRenderer.isRunning()) {
+                                HookRuntime.log("ALIVE 渲染器已不在运行 → 重置状态，下个 tick 重启")
+                                lastKey = null
+                                lastScope = Int.MIN_VALUE
+                                lastStyle = Int.MIN_VALUE
+                                lastVer = null
+                            }
                             if (key != lastKey || scope != lastScope || style != lastStyle ||
                                 ver != lastVer
                             ) {

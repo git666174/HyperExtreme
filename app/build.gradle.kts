@@ -33,7 +33,7 @@ android {
         applicationId = "com.frederic22.hyperextreme.alive"
         minSdk = 33
         targetSdk = 37
-        versionCode = 132
+        versionCode = 133
         versionName = "1.0 Beta1+alive-fix"
 
         ndk {
