@@ -655,7 +655,9 @@ internal object AliveRenderer {
         )
         val token = runCatching { gw.invoke(inst, 0, true) }.getOrNull() ?: return null
         val leash = runCatching { token.javaClass.getMethod("getLeash").invoke(token) }.getOrNull()
-        return leash?.toString()
+        // SurfaceControl.toString() 末尾的 "/@0x…" 是 identityHashCode，每次反射拿到的新
+        // wrapper 都不一样；必须裁掉，否则「层没变」也会被判成变化（2026-11-15）。
+        return leash?.toString()?.substringBefore("/@")
     }
 
     /** 这次挂到的 leash 是不是「景深壁纸」(pictorial)：锁屏上 hidden，等于看不见。 */
@@ -764,7 +766,8 @@ internal object AliveRenderer {
         val leashes = HashMap<Boolean, Any?>()
         leashes[true] = leashOf(true)
         leashes[false] = leashOf(false)
-        attachedLeashSig = (leashes[true] ?: leashes[false])?.toString()
+        attachedLeashSig = (leashes[true] ?: leashes[false])
+            ?.toString()?.substringBefore("/@")
         runCatching {
             HookRuntime.log("$TAG leash 探测：lock=${leashes[true]} desk=${leashes[false]}")
         }
