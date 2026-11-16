@@ -732,7 +732,14 @@ internal object AliveRenderer {
                     HookRuntime.log("$TAG 音乐屏" + (if (shouldYield) "接管 >> 让路（alpha->0）" else "退出 >> 恢复（alpha->1）"))
                     // 让路时把叠加视图也一起收掉（2026-11-11）：只压 alpha 不够，
                     // 我们插进前景层的 View 仍可能压住 MC 的歌词。
-                    if (shouldYield) runCatching { AliveOverlay.onDisabled() }
+                    if (shouldYield) {
+                        runCatching { AliveOverlay.onDisabled() }
+                    } else {
+                        // 音乐屏期间 AOD 是让路的（黑底没被清），退出后要主动补一次，
+                        // 否则「息屏 + 音乐屏」退出后 AOD 会一直是黑的（2026-11-16）。
+                        runCatching { AliveAodHost.refreshAfterMusicExit() }
+                    }
+                    dirty = true
                     applyAlphaBoth(1f, 1f)
                 }
                 h.postDelayed(this, 300L)

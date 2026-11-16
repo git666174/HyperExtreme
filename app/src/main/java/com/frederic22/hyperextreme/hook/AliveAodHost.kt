@@ -180,6 +180,43 @@ internal object AliveAodHost {
         note("AOD 文本节点(" + out.size + "): " + out.joinToString(" | "))
     }
 
+    /**
+     * 音乐屏退出后恢复 AOD 透明（2026-11-16）。
+     *
+     * 音乐屏期间 [onAodViewAttached] 与 setBackgroundColor 都是「彻底让路」，
+     * 于是 AODView 上的系统黑底被原样留下；如果用户是「息屏 + 音乐屏」状态下退出音乐屏，
+     * 之后不会再有一次 setBackgroundColor 调用，AOD 就一直黑着（Alive 不恢复）。
+     *
+     * 这里主动扫一遍当前窗口树里的 AODView，把纯黑底重新置空。
+     */
+    fun refreshAfterMusicExit() {
+        if (!isAlive()) return
+        runCatching {
+            val cls = Class.forName("android.view.WindowManagerGlobal", false, javaClass.classLoader)
+            val inst = cls.getMethod("getInstance").invoke(null)
+            val field = cls.getDeclaredField("mViews").apply { isAccessible = true }
+            val views = field.get(inst) as? List<*> ?: return@runCatching
+            var fixed = 0
+            var seen = 0
+            fun walk(v: View, depth: Int) {
+                if (depth > 10) return
+                if (isAodRoot(v)) {
+                    seen++
+                    val bg = v.background
+                    if (bg == null || (bg is ColorDrawable && bg.color == BLACK)) {
+                        v.setBackgroundColor(0)
+                        fixed++
+                    }
+                }
+                if (v is android.view.ViewGroup) {
+                    for (i in 0 until v.childCount) walk(v.getChildAt(i), depth + 1)
+                }
+            }
+            for (v in views) (v as? View)?.let { walk(it, 0) }
+            if (seen > 0) note("音乐屏退出：清 AOD 黑底（AODView=" + seen + "，置空=" + fixed + "）")
+        }
+    }
+
     private fun isAodRoot(target: Any?): Boolean {
         if (target !is View) return false
         var cls: Class<*>? = target.javaClass
