@@ -189,31 +189,35 @@ internal object AliveAodHost {
      *
      * 这里主动扫一遍当前窗口树里的 AODView，把纯黑底重新置空。
      */
-    fun refreshAfterMusicExit() {
+    fun refreshAfterMusicExit(pass: Int = 0) {
         if (!isAlive()) return
         runCatching {
             val cls = Class.forName("android.view.WindowManagerGlobal", false, javaClass.classLoader)
             val inst = cls.getMethod("getInstance").invoke(null)
             val field = cls.getDeclaredField("mViews").apply { isAccessible = true }
             val views = field.get(inst) as? List<*> ?: return@runCatching
-            var fixed = 0
             var seen = 0
             fun walk(v: View, depth: Int) {
                 if (depth > 10) return
                 if (isAodRoot(v)) {
                     seen++
-                    val bg = v.background
-                    if (bg == null || (bg is ColorDrawable && bg.color == BLACK)) {
-                        v.setBackgroundColor(0)
-                        fixed++
-                    }
+                    // 不再只认纯黑：音乐屏期间系统可能换成别的 drawable/主题色，
+                    // 一律清成透明，反正只在 Alive 生效且已退出音乐屏时走这里。
+                    v.setBackgroundColor(0)
                 }
                 if (v is android.view.ViewGroup) {
                     for (i in 0 until v.childCount) walk(v.getChildAt(i), depth + 1)
                 }
             }
             for (v in views) (v as? View)?.let { walk(it, 0) }
-            if (seen > 0) note("音乐屏退出：清 AOD 黑底（AODView=" + seen + "，置空=" + fixed + "）")
+            if (pass == 0) {
+                HookRuntime.log("$TAG 音乐屏退出：AOD 扫描（窗口=" + views.size + "，AODView=" + seen + "）")
+            }
+            // AOD 窗口可能比音乐屏晚一拍重建：0.8s 再补一次，只补一次。
+            if (pass == 0) {
+                val h = android.os.Handler(android.os.Looper.getMainLooper())
+                h.postDelayed({ refreshAfterMusicExit(1) }, 800L)
+            }
         }
     }
 
