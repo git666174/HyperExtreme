@@ -866,11 +866,19 @@ internal object AliveRenderer {
             }
             attempt++
             if (attempt >= 30) {
-                // 2026-11-14：killall miwallpaper 之后壁纸层最长要 5s 以上才重建完；
-                // 原来的 12 次（≈3s）会在层还没起来时耗尽，然后「按当前 leash 继续」——
-                // 实际上一个都没挂上，渲染器空跑，锁屏/AOD 就是「偶尔失效」的样子。
-                HookRuntime.log("$TAG 挂载重试耗尽（30 次 ≈ 7.5s）仍未挂上，判为启动失败")
-                throw IllegalStateException("挂载重试耗尽且没有可用 leash")
+                // 2026-11-16 真机回归：重试循环也覆盖「挂在 pictorial 上继续等 ImageWallpaper」
+                // 这条分支 —— 一直等到 30 次还是不换层时，这里曾被判成「没挂上」而抛异常，
+                // 结果本来已经挂好的桌面份也跟着被 stop 掉（AOD/锁屏全没了）。
+                // 只有「一份都没挂上」才算失败；挂在 pictorial 上就按现状继续。
+                if (mounts.isEmpty()) {
+                    HookRuntime.log("$TAG 挂载重试耗尽（30 次 ≈ 7.5s）仍未挂上，判为启动失败")
+                    throw IllegalStateException("挂载重试耗尽且没有可用 leash")
+                }
+                HookRuntime.log(
+                    "$TAG 挂载重试耗尽（30 次 ≈ 7.5s），按当前 leash 继续（pictorial=" +
+                        leashPictorial + "，已挂 " + mounts.size + " 份）",
+                )
+                return
             }
             try {
                 Thread.sleep(250L)
